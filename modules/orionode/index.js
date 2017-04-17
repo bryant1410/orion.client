@@ -54,20 +54,32 @@ function startServer(options) {
 		}
 
 		// API handlers
-		if (options.configParams["orion.single.user"]) {
-			app.use(/* @callback */ function(req, res, next){
-				req.user = {username: "anonymous"};
-				next();
-			});
-			app.post('/login', function(req, res) {
-				if (!req.user) {
-					return res.status(200).end();
-				}
-				return res.status(200).json({UserName: req.user.username});
-			});
+//		if (options.configParams["orion.single.user"]) {
+//			app.use(/* @callback */ function(req, res, next){
+//				req.user = {username: "anonymous"};
+//				next();
+//			});
+//			app.post('/login', function(req, res) {
+//				if (!req.user) {
+//					return res.status(200).end();
+//				}
+//				return res.status(200).json({UserName: req.user.username});
+//			});
+//		} else {
+//			app.use(require(options.configParams["login.module"] || "./lib/user").router(options));
+//		}
+		// Configure metastore
+		var metastoreFactory;
+		if (options.configParams['orion.single.user']) {
+			metastoreFactory = require('./lib/metastore/fs/store');
 		} else {
-			app.use(require(options.configParams["login.module"] || "./lib/user").router(options));
+			metastoreFactory = require('./lib/metastore/mongodb/store');
 		}
+		app.locals.metastore = metastoreFactory(options);
+		app.locals.metastore.setupPassport(app);
+
+		// Add API routes
+		app.use(require('./lib/user').router(options));
 		app.use('/version', require('./lib/version').router(options));
 		if(options.configParams["additional.endpoint"]){
 			var additionalEndpoints = require(options.configParams["additional.endpoint"]);
@@ -84,7 +96,7 @@ function startServer(options) {
 		app.use('/site', checkAuthenticated, require('./lib/sites')(options));
 		app.use('/task', checkAuthenticated, require('./lib/tasks').router({ taskRoot: contextPath + '/task', singleUser: options.configParams["orion.single.user"]}));
 		app.use('/filesearch', checkAuthenticated, require('./lib/search')(options));
-		app.use('/file*', checkAuthenticated, require('./lib/file')({ gitRoot: contextPath + '/gitapi', fileRoot: contextPath + '/file', options: options }));
+		app.use('/file*', checkAuthenticated, require('./lib/file')({ workspaceRoot: contextPath + '/workspace', fileRoot: contextPath + '/file', options: options }));
 		app.use('/workspace*', checkAuthenticated, require('./lib/workspace')({ workspaceRoot: contextPath + '/workspace', fileRoot: contextPath + '/file', gitRoot: contextPath + '/gitapi', options: options }));
 		app.use('/gitapi', checkAuthenticated, require('./lib/git')({ gitRoot: contextPath + '/gitapi', fileRoot: contextPath + '/file', workspaceRoot: contextPath + '/workspace', options: options}));
 		app.use('/cfapi', checkAuthenticated, require('./lib/cf')({ fileRoot: contextPath + '/file', options: options}));

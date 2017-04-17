@@ -15,6 +15,7 @@ var clone = require('./clone');
 var path = require('path');
 var express = require('express');
 var util = require('./util');
+var fileUtil = require('../fileUtil');
 var mime = require('mime');
 
 module.exports = {};
@@ -26,8 +27,8 @@ module.exports.router = function(options) {
 	if (!gitRoot) { throw new Error('options.gitRoot is required'); }
 	
 	return express.Router()
-	.get('/', getTree)
-	.get(fileRoot + '*', getTree);
+	.get("/", getTree)
+	.get(fileRoot + "*", getTree);
 	
 function treeJSON(location, name, timestamp, dir, length) {
 	location = api.toURLPath(location);
@@ -47,10 +48,38 @@ function treeJSON(location, name, timestamp, dir, length) {
 function getTree(req, res) {
 	var repo;
 	
-	if(clone.isWorkspace(req)){
-		if (!req.params["0"]) {
-			return clone.getClones(req, res, function(repos) {
-				var tree = treeJSON("", "/", 0, true, 0);
+	if (!req.params[0]) {
+		var workspaceRoot = gitRoot + "/tree/file";
+		api.writeResponse(null, res, null, {
+				Id: req.user.username,
+				Name: req.user.username,
+				UserName: req.user.fullname || req.user.username,
+				Workspaces: req.user.workspaces.map(function(w) {
+					return {
+						Id: w.id,
+						Location: api.join(workspaceRoot, w.id),
+						Name: w.name
+					};
+				})
+			}, true);
+		return;
+	}
+	
+	var segmentCount = req.params["0"].split("/").length;
+	if (segmentCount < 2) {
+		writeError(409, res);
+		return;
+	}
+	
+	if (segmentCount === 2) {
+		var file = fileUtil.getFile(req, req.params["0"]);
+		fileUtil.getMetastore(req).getWorkspace(file.workspaceId, function(err, workspace) {
+			if (err) {
+				return writeError(400, res, err);
+			}
+			clone.getClones(req, res, function(repos) {
+				var tree = treeJSON("/file/" + workspace.id, workspace.name, 0, true, 0);
+				tree.Id = workspace.id;
 				var children = tree.Children = [];
 				function add(repos) {
 					repos.forEach(function(repo) {
@@ -61,7 +90,8 @@ function getTree(req, res) {
 				add(repos, tree);
 				writeResponse(200, res, null, tree);
 			});
-		}
+		});
+		return;
 	}
 	
 	var filePath;

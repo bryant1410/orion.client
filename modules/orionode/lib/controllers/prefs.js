@@ -11,6 +11,7 @@
 /*eslint-env node*/
 'use strict'
 var api = require('../api'),
+	fileUtil = require('../fileUtil'),
  	writeResponse = api.writeResponse,
     bodyParser = require('body-parser'),
     express = require('express'),
@@ -22,9 +23,7 @@ var api = require('../api'),
     Promise = require('bluebird');
 
 var debug = Debug('orion:prefs'),
-    fs = Promise.promisifyAll(require('fs')),
-    lockFile = Promise.promisifyAll(require('lockfile')),
-    mkdirpAsync = Promise.promisify(require('mkdirp'));
+    fs = Promise.promisifyAll(require('fs'));
 
 module.exports = {};
 
@@ -33,7 +32,6 @@ module.exports.writePrefs = writePrefs;
 module.exports.router = PrefsController;
 
 var NOT_EXIST = Preference.NOT_EXIST;
-var PREF_FILENAME = PrefsController.PREF_FILENAME = 'prefs.json';
 
 // Middleware that serves prefs requests.
 //
@@ -68,16 +66,6 @@ function PrefsController(options) {
 	});
 	return router;
 
-	// Helper functions
-	function getPrefsFileName(req) {
-		var prefFolder = options.configParams['orion.single.user'] ? os.homedir() : req.user.workspaceDir;
-		return nodePath.join(prefFolder, '.orion', PREF_FILENAME);
-	}
-
-	function getLockfileName(prefFileName) {
-		return prefFileName + '.lock';
-	}
-
 	// Wraps a promise-returning handler, that needs access to prefs, into an Express middleware.
 	function wrapAsMiddleware(handler) {
 		return function(req, res, next) {
@@ -86,7 +74,7 @@ function PrefsController(options) {
 			.then(acquirePrefs.bind(null, req, res))
 			.then(handler.bind(null, req, res))
 			.then(function() { //eslint-disable-line consistent-return
-				return savePrefs(req.prefs, req.prefFile);
+				return savePrefs(req, req.prefs);
 			})
 			.catch(next); // next(err)
 		};
@@ -94,16 +82,11 @@ function PrefsController(options) {
 
 	// Promised middleware that acquires prefs (either from memory or disk) and stores in `req`.
 	function acquirePrefs(req) {
-		var prefFile = req.prefFile = getPrefsFileName(req);
-		return fs.readFileAsync(prefFile, 'utf8')
-		.catchReturn({ code: 'ENOENT' }, null) // New prefs file: suppress error
-		.then(function(contents) {
-			if (contents) {
-				debug('Read pref file %s from disk (len: %d)', prefFile, contents.length);
-			} else {
-				debug('No pref file %s exists, creating new', prefFile);
-			}
-			return new Preference(contents || null);
+		var store = fileUtil.getMetastore(req);
+		return new Promise(function(fulfill) {
+			store.readUserPreferences(req.user, function(err, prefs) {
+				fulfill(new Preference(prefs || null));
+			});
 		})
 		.then(function(prefs) {
 			var urlObj = req._parsedUrl || nodeUrl.parse(req.url);
@@ -115,42 +98,26 @@ function PrefsController(options) {
 
 	// Writes prefs to disk
 	// @returns Promise that resolves if prefs were written ok, rejects if a problem happened.
-	function savePrefs(prefs, prefFile) {
+	function savePrefs(req, prefs) {
 		/*eslint-disable consistent-return*/
 		if (!prefs.modified()) {
 			debug("savePrefs(): not modified, skip writing");
 			return Promise.resolve();
 		}
-		return mkdirpAsync(nodePath.dirname(prefFile)) // create parent folder(s) if necessary
-		.then(function() {
-			return Promise.using(lock(prefFile), function() {
-				// We have the lock until the promise returned by this function fulfills.
-				return fs.writeFileAsync(prefFile, prefs.toJSON());
-			})
-			.then(debug.bind(null, 'savePrefs(): wrote prefs.json'))
+		var store = fileUtil.getMetastore(req);
+		return new Promise(function(fulfill, reject) {
+			store.updateUserPreferences(req.user, prefs.toJSON(), function(err) {
+				if (err) {
+					return reject(err);
+				}
+				fulfill();
+			});
 		})
 		.catch(function(err) {
 			debug('savePrefs(): error writing prefs.json', err);
 			throw err;
 		});
 		/*eslint-enable*/
-	}
-
-	// Returns a promise that can be used with Promise.using() to guarantee exclusive
-	// access to the prefs file.
-	function lock(prefFile) {
-		return lockFile.lockAsync(getLockfileName(prefFile), {
-			retries: 3,
-			retryWait: 25,
-			stale: 5000
-		})
-		.disposer(function() {
-			return lockFile.unlockAsync(getLockfileName(prefFile))
-			.catch(function(error) {
-				// Rejecting here will crash the process; just warn
-				debug("Error unlocking pref file:", error);
-			});
-		});
 	}
 
 } // PrefsController
@@ -219,6 +186,7 @@ function handleDelete(req, res) { //eslint-disable-line consistent-return
 	res.sendStatus(204);
 }
 
+var PREF_FILENAME = 'prefs.json';
 function getElectronPrefsFileName(){
 	return nodePath.join(os.homedir(), '.orion', PREF_FILENAME);
 }
